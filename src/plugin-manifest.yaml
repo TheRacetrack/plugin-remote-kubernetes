@@ -1,0 +1,7 @@
+name: remote-kubernetes
+version: '1.0.0'
+url: https://github.com/TheRacetrack/plugin-remote-kubernetes
+category: 'infrastructure'
+components:
+  - 'lifecycle'
+  - 'image-builder'
