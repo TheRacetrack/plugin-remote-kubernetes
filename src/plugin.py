@@ -6,7 +6,7 @@ from racetrack_client.utils.datamodel import parse_yaml_file_datamodel
 from racetrack_client.utils.shell import shell
 
 if 'lifecycle' in sys.modules:
-    from lifecycle.deployer.infra_target import InfrastructureTarget
+    from lifecycle.infrastructure.model import InfrastructureTarget
     from deployer import KubernetesJobDeployer
     from monitor import KubernetesMonitor
     from logs_streamer import KubernetesLogsStreamer
@@ -33,7 +33,7 @@ class Plugin:
     def infrastructure_targets(self) -> dict[str, Any]:
         """
         Infrastructure Targets (deployment targets) for Job provided by this plugin
-        :return dict of infrastructure name -> an instance of lifecycle.deployer.infra_target.InfrastructureTarget
+        :return dict of infrastructure name -> an instance of InfrastructureTarget
         """
         return {
             infra_name: InfrastructureTarget(
