@@ -2,19 +2,16 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
 from base64 import b64decode, b64encode
 
 from jinja2 import Template
-from kubernetes import client
-from kubernetes.client import ApiException
-from kubernetes.config import load_incluster_config
-from kubernetes.client import V1Secret
 
 from lifecycle.auth.subject import get_auth_subject_by_job_family
 from lifecycle.config import Config
 from lifecycle.deployer.base import JobDeployer
 from lifecycle.deployer.secrets import JobSecrets
+from lifecycle.infrastructure.infra_target import remote_shell
 from lifecycle.job.models_registry import read_job_family_model
 from racetrack_client.client.env import merge_env_vars
 from racetrack_client.client_config.client_config import Credentials
@@ -22,7 +19,6 @@ from racetrack_client.log.logs import get_logger
 from racetrack_client.manifest import Manifest
 from racetrack_client.manifest.manifest import ResourcesManifest
 from racetrack_client.utils.datamodel import convert_to_json, parse_dict_datamodel
-from racetrack_client.utils.shell import shell
 from racetrack_client.utils.time import datetime_to_timestamp, now
 from racetrack_commons.plugin.core import PluginCore
 from racetrack_commons.plugin.engine import PluginEngine
@@ -32,7 +28,7 @@ from racetrack_commons.deploy.image import get_job_image
 from racetrack_commons.deploy.resource import job_resource_name
 from racetrack_commons.entities.dto import JobDto, JobStatus, JobFamilyDto
 
-from plugin_config import InfrastructureConfig
+from plugin_config import InfrastructureConfig, PluginConfig
 from utils import K8S_NAMESPACE
 
 logger = get_logger(__name__)
@@ -40,8 +36,9 @@ logger = get_logger(__name__)
 
 class KubernetesJobDeployer(JobDeployer):
 
-    def __init__(self, src_dir: Path, infrastructure_name: str, infra_config: InfrastructureConfig) -> None:
+    def __init__(self, src_dir: Path, infrastructure_name: str, infra_config: InfrastructureConfig, plugin_config: PluginConfig) -> None:
         self.src_dir = src_dir
+        self.plugin_config = plugin_config
         self.infra_config = infra_config
         self.infrastructure_name = infrastructure_name
 
@@ -51,7 +48,7 @@ class KubernetesJobDeployer(JobDeployer):
         config: Config,
         plugin_engine: PluginEngine,
         tag: str,
-        runtime_env_vars: Dict[str, str],
+        runtime_env_vars: dict[str, str],
         family: JobFamilyDto,
         containers_num: int = 1,
     ) -> JobDto:
@@ -122,7 +119,7 @@ class KubernetesJobDeployer(JobDeployer):
             container_vars.append((container_name, image_name, container_port))
         render_vars['containers'] = container_vars
 
-        _apply_templated_resource('job_template.yaml', render_vars, self.src_dir)
+        self._apply_templated_resource('job_template.yaml', render_vars, self.src_dir)
 
         internal_name = f'{resource_name}.{K8S_NAMESPACE}.svc:7000'
         return JobDto(
@@ -138,59 +135,36 @@ class KubernetesJobDeployer(JobDeployer):
         )
 
     def delete_job(self, job_name: str, job_version: str):
-        k8s_client = self._k8s_api_client()
         resource_name = job_resource_name(job_name, job_version)
 
-        apps_api = client.AppsV1Api(k8s_client)
-        apps_api.delete_namespaced_deployment(resource_name, namespace=K8S_NAMESPACE)
+        self.remote_shell(f'/opt/kubectl delete deployment/{resource_name} -n {K8S_NAMESPACE}')
         logger.info(f'deleted k8s deployment: {resource_name}')
 
-        core_api = client.CoreV1Api(k8s_client)
-        core_api.delete_namespaced_service(resource_name, namespace=K8S_NAMESPACE)
+        self.remote_shell(f'/opt/kubectl delete service/{resource_name} -n {K8S_NAMESPACE}')
         logger.info(f'deleted k8s service: {resource_name}')
 
-        try:
-            core_api.delete_namespaced_secret(resource_name, namespace=K8S_NAMESPACE)
+        if self._resource_exists(f'secret/{resource_name}'):
+            self.remote_shell(f'/opt/kubectl delete secret/{resource_name} -n {K8S_NAMESPACE}')
             logger.info(f'deleted k8s secret: {resource_name}')
-        except ApiException as e:
-            if e.reason == 'Not Found':
-                logger.warning(f'k8s secret "{resource_name}" was not found')
-            else:
-                raise e
+        else:
+            logger.warning(f'k8s secret "{resource_name}" was not found')
 
-        try:
-            custom_objects_api = client.CustomObjectsApi(k8s_client)
-            custom_objects_api.delete_namespaced_custom_object('monitoring.coreos.com', 'v1', K8S_NAMESPACE, 'servicemonitors',
-                                                               resource_name)
+        if self._resource_exists(f'servicemonitors/{resource_name}'):
+            self.remote_shell(f'/opt/kubectl delete servicemonitors/{resource_name} -n {K8S_NAMESPACE}')
             logger.info(f'deleted k8s servicemonitor: {resource_name}')
-        except ApiException as e:
-            if e.reason == 'Not Found':
-                logger.warning(f'k8s servicemonitor "{resource_name}" was not found')
-            else:
-                raise e
+        else:
+            logger.warning(f'k8s servicemonitor "{resource_name}" was not found')
 
     def job_exists(self, job_name: str, job_version: str) -> bool:
-        k8s_client = self._k8s_api_client()
-        apps_api = client.AppsV1Api(k8s_client)
-        try:
-            resource_name = job_resource_name(job_name, job_version)
-            apps_api.read_namespaced_deployment(resource_name, namespace=K8S_NAMESPACE)
-            return True
-        except ApiException as e:
-            if e.reason == 'Not Found':
-                return False
-            raise e
+        resource_name = job_resource_name(job_name, job_version)
+        return self._resource_exists(f'deployment/{resource_name}')
 
-    @staticmethod
-    def _k8s_api_client() -> client.ApiClient:
-        load_incluster_config()
-        return client.ApiClient()
-
-    def save_job_secrets(self,
-                            job_name: str,
-                            job_version: str,
-                            job_secrets: JobSecrets,
-                            ):
+    def save_job_secrets(
+        self,
+        job_name: str,
+        job_version: str,
+        job_secrets: JobSecrets,
+    ):
         """Create or update secrets needed to build and deploy a job"""
         resource_name = job_resource_name(job_name, job_version)
         render_vars = {
@@ -202,25 +176,22 @@ class KubernetesJobDeployer(JobDeployer):
             'secret_runtime_env': _encode_secret_key(job_secrets.secret_runtime_env),
             'job_k8s_namespace': K8S_NAMESPACE,
         }
-        _apply_templated_resource('secret_template.yaml', render_vars, self.src_dir)
+        self._apply_templated_resource('secret_template.yaml', render_vars, self.src_dir)
 
-    def get_job_secrets(self,
-                           job_name: str,
-                           job_version: str,
-                           ) -> JobSecrets:
+    def get_job_secrets(
+        self,
+        job_name: str,
+        job_version: str,
+    ) -> JobSecrets:
         """Retrieve secrets for building and deploying a job"""
-        k8s_client = self._k8s_api_client()
-        core_api = client.CoreV1Api(k8s_client)
-
         resource_name = job_resource_name(job_name, job_version)
-        try:
-            secret: V1Secret = core_api.read_namespaced_secret(resource_name, namespace=K8S_NAMESPACE)
-        except ApiException as e:
-            if e.reason == 'Not Found':
-                raise RuntimeError(f"Can't find secrets associated with job {job_name} v{job_version}")
-            else:
-                raise e
-        secret_data: Dict[str, str] = secret.data
+        if not self._resource_exists(f'secret/{resource_name}'):
+            raise RuntimeError(f"Can't find secrets associated with job {job_name} v{job_version}")
+
+        output_str = self.remote_shell(f"/opt/kubectl -n {K8S_NAMESPACE} get secret/{resource_name} -o json")
+        result = json.loads(output_str.strip())
+
+        secret_data: dict[str, str] = result['data']
 
         secret_build_env = _decode_secret_key(secret_data, 'secret_build_env') or {}
         secret_runtime_env = _decode_secret_key(secret_data, 'secret_runtime_env') or {}
@@ -233,21 +204,29 @@ class KubernetesJobDeployer(JobDeployer):
             secret_runtime_env=secret_runtime_env,
         )
 
+    def _apply_templated_resource(self, template_filename: str, render_vars: dict[str, Any], src_dir: Path):
+        """Create resource from YAML template and apply it to kubernetes using kubectl apply"""
+        fd, path = tempfile.mkstemp(prefix=template_filename, suffix='.yaml')
+        try:
+            resource_yaml = _template_resource(template_filename, render_vars, src_dir)
+            self.remote_shell(f'''
+cat <<EOF | /opt/kubectl apply -f -
+{resource_yaml}
+EOF
+'''.strip())
+        finally:
+            if not debug_mode_enabled():
+                os.remove(path)
 
-def _apply_templated_resource(template_filename: str, render_vars: Dict[str, Any], src_dir: Path):
-    """Create resource from YAML template and apply it to kubernetes using kubectl apply"""
-    fd, path = tempfile.mkstemp(prefix=template_filename, suffix='.yaml')
-    try:
-        resource_yaml = _template_resource(template_filename, render_vars, src_dir)
-        with open(fd, 'w') as f:
-            f.write(resource_yaml)
-        shell(f'kubectl apply -f {path}')
-    finally:
-        if not debug_mode_enabled():
-            os.remove(path)
+    def _resource_exists(self, resource_name: str) -> bool:
+        output = self.remote_shell(f"/opt/kubectl -n {K8S_NAMESPACE} get {resource_name} --ignore-not-found -o name")
+        return bool(output.strip())
+
+    def remote_shell(self, cmd: str, workdir: str | None = None) -> str:
+        return remote_shell(cmd, self.infra_config.remote_gateway_url, self.infra_config.remote_gateway_token, workdir)
 
 
-def _template_resource(template_filename: str, render_vars: Dict[str, Any], src_dir: Path) -> str:
+def _template_resource(template_filename: str, render_vars: dict[str, Any], src_dir: Path) -> str:
     """Load template from YAML, render templated vars and return as a string"""
     template_path = src_dir / 'templates' / template_filename
     override_template_path = Path('/mnt/templates') / template_filename
@@ -268,7 +247,7 @@ def _encode_secret_key(obj: Any) -> str:
     return obj_encoded
 
 
-def _decode_secret_key(secret_data: Dict[str, str], key: str) -> Optional[Any]:
+def _decode_secret_key(secret_data: dict[str, str], key: str) -> Any | None:
     encoded = secret_data.get(key)
     if not encoded:
         return None

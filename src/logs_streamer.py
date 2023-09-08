@@ -1,16 +1,19 @@
 import threading
-from typing import DefaultDict, Dict
-from typing import List
+from datetime import datetime, timezone
 
-from kubernetes import client
-from kubernetes.client import V1Pod
-from kubernetes.watch import Watch
+import time
+from typing import Callable
 
+from lifecycle.infrastructure.infra_target import remote_shell
 from lifecycle.monitor.base import LogsStreamer
+from racetrack_client.log.logs import get_logger
+from racetrack_client.utils.shell import CommandError
 from racetrack_commons.deploy.resource import job_resource_name
 
 from plugin_config import InfrastructureConfig
-from utils import get_job_pod_names, k8s_api_client, K8S_NAMESPACE, K8S_JOB_RESOURCE_LABEL
+from utils import K8S_NAMESPACE, K8S_JOB_RESOURCE_LABEL
+
+logger = get_logger(__name__)
 
 
 class KubernetesLogsStreamer(LogsStreamer):
@@ -20,39 +23,41 @@ class KubernetesLogsStreamer(LogsStreamer):
         super().__init__()
         self.infra_config = infra_config
         self.infrastructure_name = infrastructure_name
-        self.sessions: Dict[str, List[Watch]] = DefaultDict(list)
+        self.sessions: dict[str, bool] = {}
 
-    def create_session(self, session_id: str, resource_properties: Dict[str, str]):
+    def create_session(self, session_id: str, resource_properties: dict[str, str], on_next_line: Callable[[str, str], None]):
         """Start a session transmitting messages to a client."""
         job_name = resource_properties.get('job_name')
         job_version = resource_properties.get('job_version')
-        tail = resource_properties.get('tail')
+        tail = resource_properties.get('tail', 20)
         resource_name = job_resource_name(job_name, job_version)
 
-        k8s_client = k8s_api_client()
-        core_api = client.CoreV1Api(k8s_client)
-        ret = core_api.list_namespaced_pod(K8S_NAMESPACE,
-                                           label_selector=f'{K8S_JOB_RESOURCE_LABEL}={resource_name}')
-        pods: List[V1Pod] = ret.items
-        pod_names = get_job_pod_names(pods)
+        def on_error(error: CommandError):
+            logger.error(f'command "{error.cmd}" failed with return code {error.returncode}: {error.stdout}')
 
-        for pod_name in pod_names:
-            watch = Watch()
-            self.sessions[session_id].append(watch)
+        def watch_logs():
+            try:
+                last_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs "{resource_name}" --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --tail {tail}')
+                for line in filter(bool, output.splitlines()):
+                    on_next_line(session_id, line)
+                self.sessions[session_id] = True
 
-            def watch_output(streamer):
-                for line in watch.stream(core_api.read_namespaced_pod_log, name=pod_name, namespace=K8S_NAMESPACE,
-                                         container=resource_name, tail_lines=tail, follow=True):
-                    streamer.broadcast(session_id, line)
+                while self.sessions.get(session_id) is True:
+                    now_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                    output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs "{resource_name}" --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --since-time="{last_time}"')
+                    last_time = now_time
+                    for line in filter(bool, output.splitlines()):
+                        on_next_line(session_id, line)
+                    time.sleep(3)
 
-            threading.Thread(
-                target=watch_output,
-                args=(self,),
-                daemon=True,
-            ).start()
+            except CommandError as e:
+                on_error(e)
+
+        threading.Thread(target=watch_logs, args=(), daemon=True).start()
 
     def close_session(self, session_id: str):
-        watches = self.sessions[session_id]
-        for watch in watches:
-            watch.stop()
-        del self.sessions[session_id]
+        self.sessions.pop(session_id, None)
+
+    def remote_shell(self, cmd: str, workdir: str | None = None) -> str:
+        return remote_shell(cmd, self.infra_config.remote_gateway_url, self.infra_config.remote_gateway_token, workdir)

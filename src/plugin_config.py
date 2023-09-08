@@ -2,9 +2,7 @@ from pydantic import BaseModel, Extra
 
 
 class InfrastructureConfig(BaseModel, extra=Extra.forbid, arbitrary_types_allowed=True):
-    # IP or Domain name of a host, e.g. "1.2.3.4"
-    hostname: str
-    remote_gateway_url: str | None = None
+    remote_gateway_url: str  # Address of a remote Pub, e.g. "http://host.docker.internal:7107"
     remote_gateway_token: str | None = None
 
 

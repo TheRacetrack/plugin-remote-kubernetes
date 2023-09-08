@@ -1,23 +1,20 @@
 from typing import Callable, Iterable
 
-from kubernetes import client
-from kubernetes.client import V1ObjectMeta, V1PodStatus, ApiException
-
 from lifecycle.config import Config
+from lifecycle.infrastructure.infra_target import remote_shell
 from lifecycle.monitor.base import JobMonitor
 from lifecycle.monitor.health import check_until_job_is_operational, quick_check_job_condition
 from lifecycle.monitor.metric_parser import read_last_call_timestamp_metric, scrape_metrics
 from racetrack_client.log.context_error import wrap_context
 from racetrack_client.log.exception import short_exception_details
-from racetrack_client.utils.shell import CommandError, shell_output
 from racetrack_client.utils.time import datetime_to_timestamp
+from racetrack_client.utils.url import join_paths
 from racetrack_commons.deploy.resource import job_resource_name
 from racetrack_commons.entities.dto import JobDto, JobStatus
 from racetrack_client.log.logs import get_logger
 
 from plugin_config import InfrastructureConfig
-from utils import get_recent_job_pod, k8s_api_client, K8S_JOB_NAME_LABEL, K8S_JOB_VERSION_LABEL, \
-    K8S_NAMESPACE, K8S_JOB_RESOURCE_LABEL, get_job_deployments, get_job_pods
+from utils import K8S_NAMESPACE, K8S_JOB_RESOURCE_LABEL, list_job_deployments, JobDeployment
 
 logger = get_logger(__name__)
 
@@ -30,36 +27,25 @@ class KubernetesMonitor(JobMonitor):
         self.infrastructure_name = infrastructure_name
 
     def list_jobs(self, config: Config) -> Iterable[JobDto]:
-        # Ideally these should be in __init__, but that breaks test_bootstrap.py
-        k8s_client = k8s_api_client()
-        core_api = client.CoreV1Api(k8s_client)
-        apps_api = client.AppsV1Api(k8s_client)
 
         with wrap_context('listing Kubernetes API'):
-            deployments = get_job_deployments(apps_api)
-            pods_by_job = get_job_pods(core_api)
+            job_deployments: list[JobDeployment] = list_job_deployments(self.remote_shell)
 
-        for resource_name, deployment in deployments.items():
-            pods = pods_by_job.get(resource_name)
-            if pods is None or len(pods) == 0:
+        for deployment in job_deployments:
+            recent_pod = deployment.pods[-1]
+            job_name = recent_pod.job_name
+            job_version = recent_pod.job_version
+            if not (recent_pod.job_name and job_version):
                 continue
 
-            recent_pod = get_recent_job_pod(pods)
-            metadata: V1ObjectMeta = recent_pod.metadata
-            job_name = metadata.labels.get(K8S_JOB_NAME_LABEL)
-            job_version = metadata.labels.get(K8S_JOB_VERSION_LABEL)
-            if not (job_name and job_version):
-                continue
-
-            start_timestamp = datetime_to_timestamp(recent_pod.metadata.creation_timestamp)
-            internal_name = f'{resource_name}.{K8S_NAMESPACE}.svc:7000'
+            start_timestamp = datetime_to_timestamp(recent_pod.creation_datetime)
+            internal_name = f'{deployment.resource_name}.{K8S_NAMESPACE}.svc:7000'
 
             replica_internal_names: list[str] = []
-            for pod in pods:
-                pod_status: V1PodStatus = pod.status
-                pod_ip_dns: str = pod_status.pod_ip.replace('.', '-')
+            for pod in deployment.pods:
+                pod_ip_dns: str = pod.ip.replace('.', '-')
                 replica_internal_names.append(
-                    f'{pod_ip_dns}.{resource_name}.{K8S_NAMESPACE}.svc:7000'
+                    f'{pod_ip_dns}.{deployment.resource_name}.{K8S_NAMESPACE}.svc:7000'
                 )
 
             job = JobDto(
@@ -75,9 +61,9 @@ class KubernetesMonitor(JobMonitor):
                 replica_internal_names=replica_internal_names,
             )
             try:
-                job_url = self._get_internal_job_url(job)
-                quick_check_job_condition(job_url)
-                job_metrics = scrape_metrics(f'{job_url}/metrics')
+                job_url, request_headers = self.get_remote_job_address(job)
+                quick_check_job_condition(job_url, request_headers)
+                job_metrics = scrape_metrics(f'{job_url}/metrics', request_headers)
                 job.last_call_time = read_last_call_timestamp_metric(job_metrics)
             except Exception as e:
                 error_details = short_exception_details(e)
@@ -86,32 +72,40 @@ class KubernetesMonitor(JobMonitor):
                 logger.warning(f'Job {job} is in bad condition: {error_details}')
             yield job
 
-    def check_job_condition(self,
-                            job: JobDto,
-                            deployment_timestamp: int = 0,
-                            on_job_alive: Callable = None,
-                            logs_on_error: bool = True,
-                            ):
+    def check_job_condition(
+        self,
+        job: JobDto,
+        deployment_timestamp: int = 0,
+        on_job_alive: Callable = None,
+        logs_on_error: bool = True,
+    ):
+        job_url, request_headers = self.get_remote_job_address(job)
         try:
-            check_until_job_is_operational(self._get_internal_job_url(job),
-                                           deployment_timestamp, on_job_alive)
+            check_until_job_is_operational(job_url, deployment_timestamp, on_job_alive, request_headers)
         except Exception as e:
             if logs_on_error:
-                try:
-                    logs = self.read_recent_logs(job)
-                except (AssertionError, ApiException, CommandError):
-                    raise RuntimeError(str(e)) from e
+                logs = self.read_recent_logs(job)
                 raise RuntimeError(f'{e}\nJob logs:\n{logs}') from e
             else:
                 raise RuntimeError(str(e)) from e
 
+    def get_remote_job_address(self, job: JobDto) -> tuple[str, dict[str, str]]:
+        if not self.infra_config.remote_gateway_url:
+            return f'http://{job.internal_name}', {}
+        request_headers = {
+            'X-Racetrack-Gateway-Token': self.infra_config.remote_gateway_token,
+            'X-Racetrack-Job-Internal-Name': job.internal_name,
+        }
+        remote_url = join_paths(self.infra_config.remote_gateway_url, "/pub/remote/forward/", job.name, job.version)
+        return remote_url, request_headers
+
     def read_recent_logs(self, job: JobDto, tail: int = 20) -> str:
         resource_name = job_resource_name(job.name, job.version)
-        return shell_output(f'kubectl logs'
-                            f' --selector {K8S_JOB_RESOURCE_LABEL}={resource_name}'
-                            f' -n {K8S_NAMESPACE}'
-                            f' --tail={tail}'
-                            f' --container={resource_name}')
+        return self.remote_shell(f'/opt/kubectl logs'
+                                 f' --selector {K8S_JOB_RESOURCE_LABEL}={resource_name}'
+                                 f' -n {K8S_NAMESPACE}'
+                                 f' --tail={tail}'
+                                 f' --container={resource_name}')
 
-    def _get_internal_job_url(self, job: JobDto) -> str:
-        return f'http://{job.internal_name}'
+    def remote_shell(self, cmd: str) -> str:
+        return remote_shell(cmd, self.infra_config.remote_gateway_url, self.infra_config.remote_gateway_token)

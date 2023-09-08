@@ -1,5 +1,4 @@
 import sys
-from typing import Any
 
 from racetrack_client.log.logs import get_logger
 from racetrack_client.utils.datamodel import parse_yaml_file_datamodel
@@ -30,15 +29,15 @@ class Plugin:
         infra_num = len(self._infrastructure_targets)
         logger.info(f'Remote Kubernetes plugin loaded with {infra_num} infrastructure targets')
 
-    def infrastructure_targets(self) -> dict[str, Any]:
+    def infrastructure_targets(self) -> dict[str, 'InfrastructureTarget']:
         """
-        Infrastructure Targets (deployment targets) for Job provided by this plugin
+        Infrastructure Targets (deployment targets) for Jobs provided by this plugin
         :return dict of infrastructure name -> an instance of InfrastructureTarget
         """
         return {
             infra_name: InfrastructureTarget(
                 name=infra_name,
-                job_deployer=KubernetesJobDeployer(self.plugin_dir, infra_name, infra_config),
+                job_deployer=KubernetesJobDeployer(self.plugin_dir, infra_name, infra_config, self.plugin_config),
                 job_monitor=KubernetesMonitor(infra_name, infra_config),
                 logs_streamer=KubernetesLogsStreamer(infra_name, infra_config),
                 remote_gateway_url=infra_config.remote_gateway_url,

@@ -1,10 +1,10 @@
-from __future__ import annotations
+import json
 from collections import defaultdict
 import os
+from datetime import datetime, timezone
+from typing import Callable
 
-from kubernetes import client
-from kubernetes.client import V1ObjectMeta, V1Pod, V1Deployment, V1PodStatus
-from kubernetes.config import load_incluster_config
+from pydantic import BaseModel
 
 K8S_NAMESPACE = os.environ.get('JOB_K8S_NAMESPACE', 'racetrack')
 K8S_JOB_RESOURCE_LABEL = "racetrack/job"
@@ -12,70 +12,60 @@ K8S_JOB_NAME_LABEL = "racetrack/job-name"
 K8S_JOB_VERSION_LABEL = "racetrack/job-version"
 
 
-def k8s_api_client() -> client.ApiClient:
-    load_incluster_config()
-    return client.ApiClient()
+class JobPod(BaseModel):
+    pod_name: str
+    resource_name: str
+    job_name: str
+    job_version: str
+    creation_datetime: datetime
+    phase: str
+    ip: str
 
 
-def get_recent_job_pod(pods: list[V1Pod]) -> V1Pod:
-    """If many pods are found, return the latest alive pod"""
-    assert pods, 'no pod found with expected job label'
-    pods_alive = [pod for pod in pods if pod.metadata.deletion_timestamp is None]  # ignore Terminating pods
-    assert pods_alive, 'no alive pod found with expected job label'
-    recent_pod = sorted(pods_alive, key=lambda pod: pod.metadata.creation_timestamp)[-1]
-    return recent_pod
+class JobDeployment(BaseModel):
+    resource_name: str
+    pods: list[JobPod] = []
 
 
-def get_job_pod_names(pods: list[V1Pod]) -> list[str]:
-    """Get alive job pods names"""
-    assert pods, 'empty pods list'
-    pods_alive = [pod for pod in pods if pod.metadata.deletion_timestamp is None]  # ignore Terminating pods
-    assert pods_alive, 'no alive pod found'
-    return [pod.metadata.name for pod in pods_alive]
+def list_job_deployments(remote_shell: Callable[[str], str]) -> list[JobDeployment]:
+    cmd = f"/opt/kubectl -n {K8S_NAMESPACE} get pods --field-selector=status.phase=Running --selector='racetrack/job' -o json"
+    output_str = remote_shell(cmd).strip()
+    result = json.loads(output_str)
 
+    pods_by_job: dict[str, list[JobPod]] = defaultdict(list)
+    for pod_item in result['items']:
+        metadata = pod_item.get('metadata', {})
+        pod_name = metadata.get('name')
+        creation_timestamp: str = metadata.get('creationTimestamp')
+        if metadata.get('deletionTimestamp') is not None:  # ignore Terminating pods
+            continue
+        creation_datetime: datetime = datetime.strptime(creation_timestamp, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+        pod_labels: dict[str, str] = metadata.get('labels')
+        job_name = pod_labels.get(K8S_JOB_NAME_LABEL)
+        job_version = pod_labels.get(K8S_JOB_VERSION_LABEL)
+        resource_name = pod_labels.get(K8S_JOB_RESOURCE_LABEL)
+        status = pod_item.get('status', {})
+        pod_ip = status.get('podIP')
+        phase = status.get('phase')
 
-def get_job_deployments(apps_api: client.AppsV1Api) -> dict[str, V1Deployment]:
-    job_deployments = {}
-    _continue = None  # pointer to the query in case of multiple pages
-    while True:
-        ret = apps_api.list_namespaced_deployment(K8S_NAMESPACE, limit=100, _continue=_continue)
-        deployments: list[V1Deployment] = ret.items
+        job_pod = JobPod(
+            pod_name=pod_name,
+            resource_name=resource_name,
+            job_name=job_name,
+            job_version=job_version,
+            creation_datetime=creation_datetime,
+            phase=phase,
+            ip=pod_ip,
+        )
+        pods_by_job[resource_name].append(job_pod)
 
-        for deployment in deployments:
-            metadata: V1ObjectMeta = deployment.metadata
-            if K8S_JOB_RESOURCE_LABEL in metadata.labels:
-                name = metadata.labels[K8S_JOB_RESOURCE_LABEL]
-                job_deployments[name] = deployment
+    deployments: list[JobDeployment] = []
+    for resource_name, pods in pods_by_job.items():
+        sorted_pods = sorted(pods, key=lambda pod: pod.creation_datetime)
+        job_deployment = JobDeployment(
+            resource_name=resource_name,
+            pods=sorted_pods,
+        )
+        deployments.append(job_deployment)
 
-        _continue = ret.metadata._continue
-        if _continue is None:
-            break
-
-    return job_deployments
-
-
-def get_job_pods(core_api: client.CoreV1Api) -> dict[str, list[V1Pod]]:
-    """Return mapping: resource name (job_name & job_version) -> list of pods"""
-    job_pods = defaultdict(list)
-    _continue = None  # pointer to the query in case of multiple pages
-    while True:
-        ret = core_api.list_namespaced_pod(K8S_NAMESPACE, limit=100, _continue=_continue)
-        pods: list[V1Pod] = ret.items
-
-        for pod in pods:
-            metadata: V1ObjectMeta = pod.metadata
-            # omit terminating pods by checking deletion_timestamp,
-            # because that's only way to get solid info whether pod has been deleted;
-            # pod statuses can have few seconds of delay
-            if pod.metadata.deletion_timestamp is not None:
-                continue
-
-            if K8S_JOB_RESOURCE_LABEL in metadata.labels:
-                name = metadata.labels[K8S_JOB_RESOURCE_LABEL]
-                job_pods[name].append(pod)
-
-        _continue = ret.metadata._continue
-        if _continue is None:
-            break
-
-    return job_pods
+    return sorted(deployments, key=lambda d: d.resource_name)
