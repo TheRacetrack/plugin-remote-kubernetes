@@ -38,14 +38,14 @@ class KubernetesLogsStreamer(LogsStreamer):
         def watch_logs():
             try:
                 last_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs "{resource_name}" --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --tail {tail}')
+                output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --tail {tail}')
                 for line in filter(bool, output.splitlines()):
                     on_next_line(session_id, line)
                 self.sessions[session_id] = True
 
                 while self.sessions.get(session_id) is True:
                     now_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                    output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs "{resource_name}" --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --since-time="{last_time}"')
+                    output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --since-time="{last_time}"')
                     last_time = now_time
                     for line in filter(bool, output.splitlines()):
                         on_next_line(session_id, line)
