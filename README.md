@@ -14,22 +14,28 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
     racetrack plugin install remote-kubernetes-*.zip
     ```
 
-3.  Download `kubectl` client and keep it in the working directory:
+3.  Build image of remote Pub gateway, suitable for kubernetes setup.
     ```shell
-    mkdir -p ~/racetrack
-    cd ~/racetrack
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    make build-remote-pub
     ```
-    This binary will be mounted to the remote Pub container.
+    This will produce `ghcr.io/theracetrack/plugin-remote-kubernetes/pub-remote:latest` image.
+    Now retag it and push it to the registry that is accessible by your Kubernetes cluster
+    (make sure it can pull from there):
+    ```shell
+    IMAGE=localhost:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
+    
+    docker tag ghcr.io/theracetrack/plugin-remote-kubernetes/pub-remote:latest $IMAGE
+	docker push $IMAGE
+    ```
 
-4.  Install Racetrack's PUB gateway on a remote host, which will dispatch the traffic to the local jobs.
+4.  Deploy Racetrack's PUB gateway on a remote host, which will dispatch the traffic to the local jobs.
     Generate a strong password that will be used as a token to authorize only the requests coming from the main Racetrack:
     ```shell
     REMOTE_GATEWAY_TOKEN='5tr0nG_PA55VoRD'
-    IMAGE=ghcr.io/theracetrack/racetrack/pub:latest
+    IMAGE=kind-registry:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
     NAMESPACE=racetrack
     
-    cat <<EOF | kubectl apply -f -
+    cat << EOF | kubectl apply -f -
     apiVersion: apps/v1
     kind: Deployment
     metadata:
@@ -47,14 +53,6 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
           labels:
             app.kubernetes.io/name: pub-remote
         spec:
-          securityContext:
-            supplementalGroups: [200000]
-            fsGroup: 200000
-            runAsUser: 100000
-            runAsGroup: 100000
-          automountServiceAccountToken: false
-          imagePullSecrets:
-            - name: docker-registry-read-secret
           priorityClassName: high-priority
           hostname: pub-remote
           subdomain: pub-remote
@@ -65,19 +63,6 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
               ports:
                 - containerPort: 7005
               tty: true
-              resources:
-                requests:
-                  memory: "500Mi"
-                  cpu: "25m"
-                limits:
-                  memory: "1Gi"
-                  cpu: "2000m"
-              securityContext:
-                readOnlyRootFilesystem: false
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop: ["all"]
-                runAsNonRoot: true
               env:
                 - name: PUB_PORT
                   value: '7005'
@@ -112,19 +97,20 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
     spec:
       selector:
         app.kubernetes.io/name: pub-remote
-      type: ClusterIP
+      type: NodePort
       ports:
         - name: pub-remote
+          nodePort: 30005
           port: 7005
           targetPort: 7005
     EOF
     ```
-    Make sure pods can speak to local Kubernetes API inside the cluster.
+    Make sure pods can [speak to local Kubernetes API inside the cluster](https://github.com/TheRacetrack/racetrack/blob/master/kustomize/kind/roles.yaml).
 
 5.  Go to Racetrack's Dashboard, Administration, Edit Config of the plugin.
     Prepare the following data:
     
-    - Host IP or DNS hostname
+    - IP or DNS hostname of your cluster
     - Credentials to the Docker Registry, where Job images will be located.
 
     Save the YAML configuration of the plugin:

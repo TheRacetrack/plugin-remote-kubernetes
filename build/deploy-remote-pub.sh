@@ -3,7 +3,7 @@ REMOTE_GATEWAY_TOKEN='5tr0nG_PA55VoRD'
 IMAGE=kind-registry:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
 NAMESPACE=racetrack
 
-cat <<EOF | kubectl apply -f -
+cat << EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
