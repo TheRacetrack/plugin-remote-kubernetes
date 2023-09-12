@@ -20,10 +20,11 @@ class Plugin:
     def __init__(self):
         self.plugin_config: PluginConfig = parse_yaml_file_datamodel(self.config_path, PluginConfig)
 
-        docker_config = self.plugin_config.docker
-        if docker_config and docker_config.docker_registry and docker_config.username:
-            shell(f'echo "{docker_config.password}" | docker login --username "{docker_config.username}" --password-stdin "{docker_config.docker_registry}"')
-            logger.info(f'Logged in to Docker Registry: {docker_config.docker_registry}')
+        if 'image_builder' in sys.modules:
+            docker_config = self.plugin_config.docker
+            if docker_config and docker_config.docker_registry and docker_config.username:
+                shell(f'echo "{docker_config.password}" | docker login --username "{docker_config.username}" --password-stdin "{docker_config.docker_registry}"')
+                logger.info(f'Logged in to Docker Registry: {docker_config.docker_registry}')
 
         self._infrastructure_targets: dict[str, InfrastructureConfig] = self.plugin_config.infrastructure_targets or {}
         infra_num = len(self._infrastructure_targets)

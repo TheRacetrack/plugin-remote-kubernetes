@@ -1,3 +1,5 @@
+.PHONY: build
+
 bundle:
 	cd src &&\
 	racetrack plugin bundle --out=..
@@ -5,5 +7,8 @@ bundle:
 install:
 	racetrack plugin install *.zip
 
-download-kubectl:
-	curl -LO "https://dl.k8s.io/release/$(shell curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+build-remote-pub:
+	cd build && ./build-k8s-remote-pub.sh
+
+deploy-remote-pub:
+	cd build && ./deploy-remote-pub.sh
