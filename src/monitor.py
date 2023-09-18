@@ -47,6 +47,7 @@ class KubernetesMonitor(JobMonitor):
                 replica_internal_names.append(
                     f'{pod_ip_dns}.{deployment.resource_name}.{K8S_NAMESPACE}.svc:7000'
                 )
+            replica_internal_names.sort()
 
             job = JobDto(
                 name=job_name,
