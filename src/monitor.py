@@ -97,7 +97,7 @@ class KubernetesMonitor(JobMonitor):
             'X-Racetrack-Gateway-Token': self.infra_config.remote_gateway_token,
             'X-Racetrack-Job-Internal-Name': job.internal_name,
         }
-        remote_url = join_paths(self.infra_config.remote_gateway_url, "/pub/remote/forward/", job.name, job.version)
+        remote_url = join_paths(self.infra_config.remote_gateway_url, "/remote/forward/", job.name, job.version)
         return remote_url, request_headers
 
     def read_recent_logs(self, job: JobDto, tail: int = 20) -> str:
