@@ -8,13 +8,18 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
     ```shell
     make bundle
     ```
-
-2.  Activate the plugin in Racetrack Dashboard Admin page by uploading the zipped plugin file:
+    
+    Afterward, activate the plugin in Racetrack Dashboard Admin page by uploading the zipped plugin file:
     ```shell
     racetrack plugin install remote-kubernetes-*.zip
     ```
+    
+    Alternatively, you can install the latest plugin by running:
+    ```shell
+    racetrack plugin install github.com/TheRacetrack/plugin-remote-kubernetes
+    ```
 
-3.  Build image of remote Pub gateway, suitable for kubernetes setup.
+2.  Build image of remote Pub gateway, suitable for kubernetes setup.
     ```shell
     make build-remote-pub
     ```
@@ -28,7 +33,7 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
 	docker push $IMAGE
     ```
 
-4.  Deploy Racetrack's PUB gateway on a remote host, which will dispatch the traffic to the local jobs.
+3.  Deploy Racetrack's PUB gateway on a remote host, which will dispatch the traffic to the local jobs.
     Generate a strong password that will be used as a token to authorize only the requests coming from the main Racetrack:
     ```shell
     REMOTE_GATEWAY_TOKEN='5tr0nG_PA55VoRD'
@@ -107,7 +112,7 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
     ```
     Make sure pods can [speak to local Kubernetes API inside the cluster](https://github.com/TheRacetrack/racetrack/blob/master/kustomize/kind/roles.yaml).
 
-5.  Go to Racetrack's Dashboard, Administration, Edit Config of the plugin.
+4.  Go to Racetrack's Dashboard, Administration, Edit Config of the plugin.
     Prepare the following data:
     
     - IP or DNS hostname of your cluster
