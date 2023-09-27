@@ -124,6 +124,7 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
       remote-k8s:
         remote_gateway_url: 'http://1.2.3.4:7105/pub'
         remote_gateway_token: '5tr0nG_PA55VoRD'
+        job_k8s_namespace: 'racetrack'
 
     docker: 
       docker_registry: 'docker.registry.example.com'
