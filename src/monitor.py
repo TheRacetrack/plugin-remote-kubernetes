@@ -14,7 +14,7 @@ from racetrack_commons.entities.dto import JobDto, JobStatus
 from racetrack_client.log.logs import get_logger
 
 from plugin_config import InfrastructureConfig
-from utils import K8S_NAMESPACE, K8S_JOB_RESOURCE_LABEL, list_job_deployments, JobDeployment
+from utils import K8S_JOB_RESOURCE_LABEL, list_job_deployments, JobDeployment
 
 logger = get_logger(__name__)
 
@@ -25,11 +25,12 @@ class KubernetesMonitor(JobMonitor):
     def __init__(self, infrastructure_name: str, infra_config: InfrastructureConfig) -> None:
         self.infra_config = infra_config
         self.infrastructure_name = infrastructure_name
+        self.k8s_namespace = infra_config.job_k8s_namespace
 
     def list_jobs(self, config: Config) -> Iterable[JobDto]:
 
         with wrap_context('listing Kubernetes API'):
-            job_deployments: list[JobDeployment] = list_job_deployments(self.remote_shell)
+            job_deployments: list[JobDeployment] = list_job_deployments(self.k8s_namespace, self.remote_shell)
 
         for deployment in job_deployments:
             recent_pod = deployment.pods[-1]
@@ -39,13 +40,13 @@ class KubernetesMonitor(JobMonitor):
                 continue
 
             start_timestamp = datetime_to_timestamp(recent_pod.creation_datetime)
-            internal_name = f'{deployment.resource_name}.{K8S_NAMESPACE}.svc:7000'
+            internal_name = f'{deployment.resource_name}.{self.k8s_namespace}.svc:7000'
 
             replica_internal_names: list[str] = []
             for pod in deployment.pods:
                 pod_ip_dns: str = pod.ip.replace('.', '-')
                 replica_internal_names.append(
-                    f'{pod_ip_dns}.{deployment.resource_name}.{K8S_NAMESPACE}.svc:7000'
+                    f'{pod_ip_dns}.{deployment.resource_name}.{self.k8s_namespace}.svc:7000'
                 )
             replica_internal_names.sort()
 
@@ -104,7 +105,7 @@ class KubernetesMonitor(JobMonitor):
         resource_name = job_resource_name(job.name, job.version)
         return self.remote_shell(f'/opt/kubectl logs'
                                  f' --selector {K8S_JOB_RESOURCE_LABEL}={resource_name}'
-                                 f' -n {K8S_NAMESPACE}'
+                                 f' -n {self.k8s_namespace}'
                                  f' --tail={tail}'
                                  f' --container={resource_name}')
 

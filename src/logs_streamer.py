@@ -11,7 +11,7 @@ from racetrack_client.utils.shell import CommandError
 from racetrack_commons.deploy.resource import job_resource_name
 
 from plugin_config import InfrastructureConfig
-from utils import K8S_NAMESPACE, K8S_JOB_RESOURCE_LABEL
+from utils import K8S_JOB_RESOURCE_LABEL
 
 logger = get_logger(__name__)
 
@@ -24,6 +24,7 @@ class KubernetesLogsStreamer(LogsStreamer):
         self.infra_config = infra_config
         self.infrastructure_name = infrastructure_name
         self.sessions: dict[str, bool] = {}
+        self.k8s_namespace = infra_config.job_k8s_namespace
 
     def create_session(self, session_id: str, resource_properties: dict[str, str], on_next_line: Callable[[str, str], None]):
         """Start a session transmitting messages to a client."""
@@ -38,14 +39,14 @@ class KubernetesLogsStreamer(LogsStreamer):
         def watch_logs():
             try:
                 last_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --tail {tail}')
+                output = self.remote_shell(f'/opt/kubectl -n {self.k8s_namespace} logs --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --tail {tail}')
                 for line in filter(bool, output.splitlines()):
                     on_next_line(session_id, line)
                 self.sessions[session_id] = True
 
                 while self.sessions.get(session_id) is True:
                     now_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                    output = self.remote_shell(f'/opt/kubectl -n {K8S_NAMESPACE} logs --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --since-time="{last_time}"')
+                    output = self.remote_shell(f'/opt/kubectl -n {self.k8s_namespace} logs --selector="{K8S_JOB_RESOURCE_LABEL}={resource_name}" --all-containers=true --since-time="{last_time}"')
                     last_time = now_time
                     for line in filter(bool, output.splitlines()):
                         on_next_line(session_id, line)

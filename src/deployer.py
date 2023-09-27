@@ -29,7 +29,6 @@ from racetrack_commons.deploy.resource import job_resource_name
 from racetrack_commons.entities.dto import JobDto, JobStatus, JobFamilyDto
 
 from plugin_config import InfrastructureConfig, PluginConfig
-from utils import K8S_NAMESPACE
 
 logger = get_logger(__name__)
 
@@ -41,6 +40,7 @@ class KubernetesJobDeployer(JobDeployer):
         self.plugin_config = plugin_config
         self.infra_config = infra_config
         self.infrastructure_name = infrastructure_name
+        self.k8s_namespace = infra_config.job_k8s_namespace
 
     def deploy_job(
         self,
@@ -108,7 +108,7 @@ class KubernetesJobDeployer(JobDeployer):
             'memory_max': memory_max,
             'cpu_min': cpu_min,
             'cpu_max': cpu_max,
-            'job_k8s_namespace': K8S_NAMESPACE,
+            'job_k8s_namespace': self.k8s_namespace,
         }
         
         container_vars = []  # list of container tuples: (container_name, image_name, container_port)
@@ -121,7 +121,7 @@ class KubernetesJobDeployer(JobDeployer):
 
         self._apply_templated_resource('job_template.yaml', render_vars, self.src_dir)
 
-        internal_name = f'{resource_name}.{K8S_NAMESPACE}.svc:7000'
+        internal_name = f'{resource_name}.{self.k8s_namespace}.svc:7000'
         return JobDto(
             name=manifest.name,
             version=manifest.version,
@@ -137,20 +137,20 @@ class KubernetesJobDeployer(JobDeployer):
     def delete_job(self, job_name: str, job_version: str):
         resource_name = job_resource_name(job_name, job_version)
 
-        self.remote_shell(f'/opt/kubectl delete deployment/{resource_name} -n {K8S_NAMESPACE}')
+        self.remote_shell(f'/opt/kubectl delete deployment/{resource_name} -n {self.k8s_namespace}')
         logger.info(f'deleted k8s deployment: {resource_name}')
 
-        self.remote_shell(f'/opt/kubectl delete service/{resource_name} -n {K8S_NAMESPACE}')
+        self.remote_shell(f'/opt/kubectl delete service/{resource_name} -n {self.k8s_namespace}')
         logger.info(f'deleted k8s service: {resource_name}')
 
         if self._resource_exists(f'secret/{resource_name}'):
-            self.remote_shell(f'/opt/kubectl delete secret/{resource_name} -n {K8S_NAMESPACE}')
+            self.remote_shell(f'/opt/kubectl delete secret/{resource_name} -n {self.k8s_namespace}')
             logger.info(f'deleted k8s secret: {resource_name}')
         else:
             logger.warning(f'k8s secret "{resource_name}" was not found')
 
         if self._resource_exists(f'servicemonitors/{resource_name}'):
-            self.remote_shell(f'/opt/kubectl delete servicemonitors/{resource_name} -n {K8S_NAMESPACE}')
+            self.remote_shell(f'/opt/kubectl delete servicemonitors/{resource_name} -n {self.k8s_namespace}')
             logger.info(f'deleted k8s servicemonitor: {resource_name}')
         else:
             logger.warning(f'k8s servicemonitor "{resource_name}" was not found')
@@ -174,7 +174,7 @@ class KubernetesJobDeployer(JobDeployer):
             'git_credentials': _encode_secret_key(job_secrets.git_credentials),
             'secret_build_env': _encode_secret_key(job_secrets.secret_build_env),
             'secret_runtime_env': _encode_secret_key(job_secrets.secret_runtime_env),
-            'job_k8s_namespace': K8S_NAMESPACE,
+            'job_k8s_namespace': self.k8s_namespace,
         }
         self._apply_templated_resource('secret_template.yaml', render_vars, self.src_dir)
 
@@ -188,7 +188,7 @@ class KubernetesJobDeployer(JobDeployer):
         if not self._resource_exists(f'secret/{resource_name}'):
             raise RuntimeError(f"Can't find secrets associated with job {job_name} v{job_version}")
 
-        output_str = self.remote_shell(f"/opt/kubectl -n {K8S_NAMESPACE} get secret/{resource_name} -o json")
+        output_str = self.remote_shell(f"/opt/kubectl -n {self.k8s_namespace} get secret/{resource_name} -o json")
         result = json.loads(output_str.strip())
 
         secret_data: dict[str, str] = result['data']
@@ -219,7 +219,7 @@ EOF
                 os.remove(path)
 
     def _resource_exists(self, resource_name: str) -> bool:
-        output = self.remote_shell(f"/opt/kubectl -n {K8S_NAMESPACE} get {resource_name} --ignore-not-found -o name")
+        output = self.remote_shell(f"/opt/kubectl -n {self.k8s_namespace} get {resource_name} --ignore-not-found -o name")
         return bool(output.strip())
 
     def remote_shell(self, cmd: str, workdir: str | None = None) -> str:

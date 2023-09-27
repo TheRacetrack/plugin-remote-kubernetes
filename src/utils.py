@@ -1,12 +1,10 @@
 import json
 from collections import defaultdict
-import os
 from datetime import datetime, timezone
 from typing import Callable
 
 from pydantic import BaseModel
 
-K8S_NAMESPACE = os.environ.get('JOB_K8S_NAMESPACE', 'racetrack')
 K8S_JOB_RESOURCE_LABEL = "racetrack/job"
 K8S_JOB_NAME_LABEL = "racetrack/job-name"
 K8S_JOB_VERSION_LABEL = "racetrack/job-version"
@@ -27,8 +25,8 @@ class JobDeployment(BaseModel):
     pods: list[JobPod] = []
 
 
-def list_job_deployments(remote_shell: Callable[[str], str]) -> list[JobDeployment]:
-    cmd = f"/opt/kubectl -n {K8S_NAMESPACE} get pods --field-selector=status.phase=Running --selector='racetrack/job' -o json"
+def list_job_deployments(k8s_namespace: str, remote_shell: Callable[[str], str]) -> list[JobDeployment]:
+    cmd = f"/opt/kubectl -n {k8s_namespace} get pods --field-selector=status.phase=Running --selector='racetrack/job' -o json"
     output_str = remote_shell(cmd).strip()
     result = json.loads(output_str)
 

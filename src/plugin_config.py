@@ -4,6 +4,7 @@ from pydantic import BaseModel, Extra
 class InfrastructureConfig(BaseModel, extra=Extra.forbid, arbitrary_types_allowed=True):
     remote_gateway_url: str  # Address of a remote Pub, e.g. "http://host.docker.internal:7107/pub"
     remote_gateway_token: str | None = None
+    job_k8s_namespace: str = 'racetrack'
 
 
 class DockerConfig(BaseModel, extra=Extra.forbid, arbitrary_types_allowed=True):
