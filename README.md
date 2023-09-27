@@ -27,17 +27,17 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
     Now retag it and push it to the registry that is accessible by your Kubernetes cluster
     (make sure it can pull from there):
     ```shell
-    IMAGE=localhost:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
+    TARGET_IMAGE=localhost:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
     
-    docker tag ghcr.io/theracetrack/plugin-remote-kubernetes/pub-remote:latest $IMAGE
-	docker push $IMAGE
+    docker tag ghcr.io/theracetrack/plugin-remote-kubernetes/pub-remote:latest $TARGET_IMAGE
+	docker push $TARGET_IMAGE
     ```
 
 3.  Deploy Racetrack's PUB gateway on a remote host, which will dispatch the traffic to the local jobs.
     Generate a strong password that will be used as a token to authorize only the requests coming from the main Racetrack:
     ```shell
     REMOTE_GATEWAY_TOKEN='5tr0nG_PA55VoRD'
-    IMAGE=kind-registry:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
+    TARGET_IMAGE=kind-registry:5000/theracetrack/plugin-remote-kubernetes/pub-remote:latest
     NAMESPACE=racetrack
     
     cat << EOF | kubectl apply -f -
@@ -45,25 +45,32 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
     kind: Deployment
     metadata:
       namespace: $NAMESPACE
-      name: pub-remote
+      name: pub
       labels:
-        app.kubernetes.io/name: pub-remote
+        app.kubernetes.io/name: pub
     spec:
       replicas: 1
       selector:
         matchLabels:
-          app.kubernetes.io/name: pub-remote
+          app.kubernetes.io/name: pub
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: pub-remote
+            app.kubernetes.io/name: pub
         spec:
+          serviceAccountName: null
+          securityContext:
+            supplementalGroups: [200000]
+            fsGroup: 200000
+            runAsUser: 100000
+            runAsGroup: 100000
+          automountServiceAccountToken: true
           priorityClassName: high-priority
-          hostname: pub-remote
-          subdomain: pub-remote
+          hostname: pub
+          subdomain: pub
           containers:
-            - name: pub-remote
-              image: $IMAGE
+            - name: pub
+              image: $TARGET_IMAGE
               imagePullPolicy: Always
               ports:
                 - containerPort: 7005
@@ -72,8 +79,6 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
                 - name: PUB_PORT
                   value: '7005'
                 - name: AUTH_REQUIRED
-                  value: 'true'
-                - name: AUTH_DEBUG
                   value: 'true'
                 - name: REMOTE_GATEWAY_MODE
                   value: 'true'
@@ -91,20 +96,27 @@ A Racetrack plugin allowing to deploy services to remote Kubernetes (running on 
                   port: 7005
                 initialDelaySeconds: 3
                 periodSeconds: 10
+              volumeMounts:
+                - mountPath: /.kube
+                  name: tmp-k8s-volume
+          volumes:
+            - name: tmp-k8s-volume
+              emptyDir:
+                sizeLimit: 1Gi
     ---
     apiVersion: v1
     kind: Service
     metadata:
       namespace: $NAMESPACE
-      name: pub-remote
+      name: pub
       labels:
-        app.kubernetes.io/name: pub-remote
+        app.kubernetes.io/name: pub
     spec:
       selector:
-        app.kubernetes.io/name: pub-remote
+        app.kubernetes.io/name: pub
       type: NodePort
       ports:
-        - name: pub-remote
+        - name: pub
           nodePort: 30005
           port: 7005
           targetPort: 7005
