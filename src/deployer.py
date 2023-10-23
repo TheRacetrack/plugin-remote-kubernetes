@@ -229,7 +229,7 @@ EOF
 def _template_resource(template_filename: str, render_vars: dict[str, Any], src_dir: Path) -> str:
     """Load template from YAML, render templated vars and return as a string"""
     template_path = src_dir / 'templates' / template_filename
-    override_template_path = Path('/mnt/templates') / template_filename
+    override_template_path = Path('/mnt/templates/remote-kubernetes') / template_filename
     if override_template_path.is_file():
         template_path = override_template_path
 

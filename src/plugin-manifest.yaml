@@ -1,5 +1,5 @@
 name: remote-kubernetes
-version: '1.0.0'
+version: '1.0.1'
 url: https://github.com/TheRacetrack/plugin-remote-kubernetes
 category: 'infrastructure'
 components:
