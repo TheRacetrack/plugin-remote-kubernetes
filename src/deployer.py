@@ -51,6 +51,7 @@ class KubernetesJobDeployer(JobDeployer):
         runtime_env_vars: dict[str, str],
         family: JobFamilyDto,
         containers_num: int = 1,
+        runtime_secret_vars: dict[str, str] | None = None,
     ) -> JobDto:
         """Deploy Job on Kubernetes and expose Service accessible by Job name"""
         resource_name = job_resource_name(manifest.name, manifest.version)
@@ -109,6 +110,7 @@ class KubernetesJobDeployer(JobDeployer):
             'cpu_min': cpu_min,
             'cpu_max': cpu_max,
             'job_k8s_namespace': self.k8s_namespace,
+            'runtime_secret_vars': runtime_secret_vars or {},
         }
         
         container_vars = []  # list of container tuples: (container_name, image_name, container_port)
@@ -167,6 +169,9 @@ class KubernetesJobDeployer(JobDeployer):
     ):
         """Create or update secrets needed to build and deploy a job"""
         resource_name = job_resource_name(job_name, job_version)
+        encoded_runtime_vars = {}
+        for var_name, var_value in job_secrets.secret_runtime_env.items():
+            encoded_runtime_vars[var_name] = _encode_secret_string(var_value)
         render_vars = {
             'resource_name': resource_name,
             'job_name': job_name,
@@ -175,6 +180,7 @@ class KubernetesJobDeployer(JobDeployer):
             'secret_build_env': _encode_secret_key(job_secrets.secret_build_env),
             'secret_runtime_env': _encode_secret_key(job_secrets.secret_runtime_env),
             'job_k8s_namespace': self.k8s_namespace,
+            'encoded_runtime_vars': encoded_runtime_vars,
         }
         self._apply_templated_resource('secret_template.yaml', render_vars, self.src_dir)
 
@@ -254,6 +260,10 @@ def _decode_secret_key(secret_data: dict[str, str], key: str) -> Any | None:
     decoded_json: str = b64decode(encoded.encode()).decode()
     decoded_obj = json.loads(decoded_json)
     return decoded_obj
+
+
+def _encode_secret_string(text: str) -> str:
+    return b64encode(text.encode()).decode()
 
 
 def get_container_name(resource_name: str, container_index: int) -> str:
